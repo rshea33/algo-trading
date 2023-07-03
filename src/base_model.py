@@ -38,19 +38,23 @@ class BaseModel:
             self,
             initial_capital: float = 10000,
             plot: bool = True,
-        ) -> pd.DataFrame:
+        ) -> None:
         """Backtest the strategy on the data"""
         try:
             self._strategy()
+            self.df.dropna(inplace=True)
         except Exception as e:
             logging.error(f"Failed to run strategy for {self.ticker} from {self.start} to {self.end}")
             logging.error(e)
             raise e
-        self.df["position"] = self.df["signal"].diff()
-        self.df["portfolio_value"] = self.df["position"] * self.df["log_ret_1"]
-        self.df["portfolio_value"] = self.df["portfolio_value"].cumsum() + initial_capital
+        # add position that fills 0s with previous value
+        self.df["position"] = self.df["signal"].ffill()
+        self.df["portfolio_value"] = initial_capital + self.df["position"] * (1 + self.df["log_ret_1"])
+        self.df["portfolio_value"] = self.df["portfolio_value"].cumsum()
         self.df["returns"] = self.df["portfolio_value"].pct_change()
         self.df["drawdown"] = self.df["portfolio_value"] - self.df["portfolio_value"].cummax()
+        self.df["cummin"] = self.df["portfolio_value"].cummin()
+        self.df["cummax"] = self.df["portfolio_value"].cummax()
         
         max_drawdown = self.df["drawdown"].min()
         sharpe_ratio = self.df["returns"].mean() / self.df["returns"].std()
@@ -64,23 +68,26 @@ class BaseModel:
                 "sortino_ratio": sortino_ratio,
                 "calmar_ratio": calmar_ratio,
                 "avg_return": avg_return,
-            },
+            }, index=[0]
         )
-        return metrics
+        self.metrics = metrics
+    
+    def get_long_short_dates(self):
+        """Returns a list of dates when the strategy is long and short"""
+        long_dates = self.df[self.df["signal"] == 1].index
+        short_dates = self.df[self.df["signal"] == -1].index
+        return long_dates, short_dates
     
     def plot(
         self,
         save: Optional[str] = None,
 ) -> None:
-        fig, (ax1, ax2) = plt.subplots(figsize=(16, 9))
-        ax1.plot(self.df["portfolio_value"])
-        ax1.set_title("Portfolio value over time")
-        ax1.set_xlabel("Time")
-        ax1.set_ylabel("Portfolio value")
-        ax2.plot(self.df["drawdown"])
-        ax2.set_title("Drawdown over time")
-        ax2.set_xlabel("Time")
-        ax2.set_ylabel("Drawdown")
+        plt.figure(figsize=(12, 8))
+        plt.plot(self.df["portfolio_value"], label="Portfolio Value")
+        plt.plot(self.df["cummin"], label="Cumulative Minimum")
+        plt.plot(self.df["cummax"], label="Cumulative Maximum")
+        plt.legend()
+        plt.tight_layout()
         if save:
             logging.info(f"Saving plot to visualizations/{save}.png")
             plt.savefig(f"visualizations/{save}.png")
